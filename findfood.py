@@ -1,46 +1,95 @@
 import streamlit as st
 import pandas as pd
 import requests
+import re
 
-st.set_page_config(page_title="맛집 탐색기 (디버깅 모드)", page_icon="🐞", layout="wide")
+st.set_page_config(page_title="네이버 찐맛집 탐색기", page_icon="💚", layout="wide")
 
-st.title("🐞 에러 진단 모드")
-st.info("이 코드는 카카오가 거절하는 '진짜 이유'를 화면에 표시해줍니다.")
+def clean_html(raw_html):
+    cleanr = re.compile('<.*?>')
+    return re.sub(cleanr, '', raw_html)
 
-# 사이드바
-with st.sidebar:
-    api_key = st.text_input("카카오 REST API 키", type="password")
-    query = st.text_input("검색어", value="대전 유성구 맛집")
-    run_btn = st.button("진단 시작 🚑")
-
-if run_btn:
-    if not api_key:
-        st.warning("키를 입력해주세요.")
-    else:
-        url = "https://dapi.kakao.com/v2/local/search/keyword.json"
-        headers = {"Authorization": f"KakaoAK {api_key}"}
-        params = {"query": query, "page": 1}
-
+def search_naver_api(client_id, client_secret, query):
+    url = "https://openapi.naver.com/v1/search/local.json"
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret
+    }
+    
+    all_data = []
+    
+    # 1~3페이지 (최대 15개씩 3번 = 45개)
+    for start in [1, 16, 31]:
+        params = {
+            "query": query,
+            "display": 15,
+            "start": start,
+            "sort": "comment"  # 리뷰 많은 순으로 정렬 (찐맛집 찾기 유리)
+        }
+        
         try:
             response = requests.get(url, headers=headers, params=params)
             
-            # [핵심] 성공이든 실패든 상세 정보를 보여줌
             if response.status_code == 200:
-                st.success("🎉 성공! 데이터가 정상적으로 들어옵니다.")
-                st.json(response.json()['documents'][0]) # 데이터 샘플 출력
+                items = response.json().get('items', [])
+                if not items:
+                    break
+                    
+                for item in items:
+                    title = clean_html(item['title'])
+                    category = item['category']
+                    address = item['roadAddress'] or item['address']
+                    link = item['link']
+                    
+                    # 네이버는 별점을 바로 안 줘서, 카테고리로 1차 필터
+                    all_data.append({
+                        "식당명": title,
+                        "카테고리": category,
+                        "주소": address,
+                        "링크": link
+                    })
             else:
-                st.error(f"⛔ 차단됨 (코드 {response.status_code})")
-                # 카카오가 보낸 에러 메시지 원문 출력
-                st.code(response.text, language='json')
+                st.error(f"에러 코드 {response.status_code}: ID와 Secret을 확인해주세요.")
+                return pd.DataFrame()
                 
-                # 자주 발생하는 원인 분석
-                err_msg = response.text
-                if "ip mismatched" in err_msg:
-                    st.warning("👉 원인: 'IP 주소'가 차단되었습니다. 플랫폼 설정에서 IP 제한을 풀어야 합니다.")
-                elif "quota" in err_msg:
-                    st.warning("👉 원인: 사용 한도(쿼터)가 초과되었습니다.")
-                elif "appKey" in err_msg:
-                    st.warning("👉 원인: 키 값은 맞는데, 형식이 잘못되었습니다.")
-
         except Exception as e:
-            st.error(f"프로그램 에러: {e}")
+            st.error(f"연결 실패: {e}")
+            return pd.DataFrame()
+            
+    return pd.DataFrame(all_data)
+
+# --- UI ---
+st.title("💚 네이버 찐맛집 탐색기 (무료/개인용)")
+
+with st.sidebar:
+    st.header("설정")
+    client_id = st.text_input("Naver Client ID", type="password")
+    client_secret = st.text_input("Naver Client Secret", type="password")
+    
+    st.divider()
+    query = st.text_input("검색어", value="대전 유성구 맛집")
+    run_btn = st.button("검색 시작 🚀")
+
+if run_btn:
+    if not client_id or not client_secret:
+        st.warning("설정창에 네이버 API 키 2개를 모두 넣어주세요!")
+    else:
+        with st.spinner("네이버 지도를 훑는 중..."):
+            df = search_naver_api(client_id, client_secret, query)
+            
+            if not df.empty:
+                st.success(f"🎉 총 {len(df)}개의 맛집을 찾았습니다!")
+                
+                # '음식점' 카테고리만 남기기 (카페 포함)
+                # 네이버 카테고리 포맷: "음식점>한식", "카페,디저트" 등
+                df_clean = df[df['카테고리'].str.contains("육류|한식|일식|중식|양식|분식|카페|요리", na=False)]
+                
+                st.dataframe(
+                    df_clean,
+                    column_config={
+                        "링크": st.column_config.LinkColumn("네이버 정보 보기")
+                    },
+                    use_container_width=True
+                )
+            else:
+                st.error("결과가 없습니다. 키 값을 확인하거나 검색어를 바꿔보세요.")
