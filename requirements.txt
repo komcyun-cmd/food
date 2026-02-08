@@ -3,3 +3,6 @@ selenium
 beautifulsoup4
 pandas
 webdriver-manager
+streamlit
+pandas
+requests
